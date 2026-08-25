@@ -17,16 +17,16 @@ Continuous State-Space Model (**TG-SSM**) adapted for text-conditioned **44.1kHz
 
 ---
 
-## 🎧 Generated Studio Audio Samples (44.1kHz Master Quality)
+## 🎧 Final Master Audio Samples (44.1kHz Studio Quality)
 
 Located in `generated_audio/`:
 
-| Audio Sample | Target Drum / Prompt | Sample Rate | Duration | RMS Energy | Epoch |
+| Master Audio Sample | Target Drum / Prompt | Sample Rate | Duration | RMS Energy | Epoch |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`dac_flow_epoch_20_sample_1.wav`** | *"808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass"* | `44,100 Hz` | `0.50s` | **`0.2920`** | **Epoch 20** |
-| **`dac_flow_epoch_20_sample_2.wav`** | *"snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click"* | `44,100 Hz` | `0.50s` | `0.0867` | **Epoch 20** |
-| **`dac_flow_epoch_20_sample_3.wav`** | *"hihat, closed hat, metallic, bright top end, crisp sheen, fast decay, short tail"* | `44,100 Hz` | `0.50s` | `0.1727` | **Epoch 20** |
-| **`dac_flow_epoch_20_sample_4.wav`** | *"handclap, clap, percussion, warm analog body, punchy mid"* | `44,100 Hz` | `0.50s` | `0.0881` | **Epoch 20** |
+| **`dac_flow_epoch_35_sample_1.wav`** | *"808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass"* | `44,100 Hz` | `0.50s` | **`0.2998`** | **Epoch 35 (Master)** |
+| **`dac_flow_epoch_35_sample_2.wav`** | *"snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click"* | `44,100 Hz` | `0.50s` | `0.1194` | **Epoch 35 (Master)** |
+| **`dac_flow_epoch_35_sample_3.wav`** | *"hihat, closed hat, metallic, bright top end, crisp sheen, fast decay, short tail"* | `44,100 Hz` | `0.50s` | `0.2033` | **Epoch 35 (Master)** |
+| **`dac_flow_epoch_35_sample_4.wav`** | *"handclap, clap, percussion, warm analog body, punchy mid"* | `44,100 Hz` | `0.50s` | `0.1415` | **Epoch 35 (Master)** |
 
 ---
 
