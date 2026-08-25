@@ -1,9 +1,9 @@
 """
 multi_genre_drum_dataset.py
 Diverse Multi-Genre Drum Dataset Loader for 44.1kHz Continuous Flow-Matching TG-SSM.
-Combines multiple real studio datasets from Hugging Face:
-- yojul/one-shot-hip-hop-drums (19,673 samples: 808s, Trap, Boom Bap, Drill)
-- airasoul/drum-kit (2,700 samples: Acoustic Rock, Indie, Funk, Electronic Kits)
+Combines multiple real studio datasets from Hugging Face with robust error handling:
+- yojul/one-shot-hip-hop-drums (Trap, Drill, Boom Bap, 808s)
+- airasoul/drum-kit (Acoustic Rock, Indie, Funk Kits)
 - DSP Analog Synth Physical Models (808, 909, LinnDrum, Synthwave, Latin Percussion)
 """
 
@@ -94,7 +94,7 @@ def analyze_acoustic_attributes(wav: np.ndarray, sr: int, genre_hint: str, label
 class MultiGenreDrumDataset(Dataset):
     def __init__(
         self,
-        max_samples: int = 4000,
+        max_samples: int = 3000,
         cache_dir: str = "multi_genre_cache",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
@@ -123,47 +123,71 @@ class MultiGenreDrumDataset(Dataset):
         codec = dac.DAC.load(model_path).to(self.device)
         codec.eval()
 
-        # 2. Source A: yojul/one-shot-hip-hop-drums (Trap, Drill, Boom Bap, 808s)
-        print("Ingesting Source A: yojul/one-shot-hip-hop-drums...")
-        ds_a = load_dataset("yojul/one-shot-hip-hop-drums", split="train").cast_column("audio", Audio(decode=False))
-        labels_a = ds_a.features["label"].names
-
-        # 3. Source B: airasoul/drum-kit (Acoustic Rock, Indie, Funk Kits)
-        print("Ingesting Source B: airasoul/drum-kit...")
-        ds_b = load_dataset("airasoul/drum-kit", split="train").cast_column("audio", Audio(decode=False))
-
         entries = []
-        target_a = int(self.max_samples * 0.55)
-        target_b = int(self.max_samples * 0.30)
+        target_a = int(self.max_samples * 0.60)
+        target_b = int(self.max_samples * 0.25)
         target_synth = self.max_samples - target_a - target_b
 
         with torch.no_grad():
-            # Ingest Source A (Hip Hop, Trap, Drill, 808s)
-            indices_a = random.sample(range(len(ds_a)), min(target_a, len(ds_a)))
-            for count, idx in enumerate(indices_a):
-                row = ds_a[idx]
-                label_name = labels_a[row["label"]]
-                genre = random.choice(["trap", "drill", "boom bap", "hip-hop", "lo-fi"])
+            # 2. Source A: yojul/one-shot-hip-hop-drums (Trap, Drill, Boom Bap, 808s)
+            print("Ingesting Source A: yojul/one-shot-hip-hop-drums...")
+            try:
+                ds_a = load_dataset("yojul/one-shot-hip-hop-drums", split="train").cast_column("audio", Audio(decode=False))
+                labels_a = ds_a.features["label"].names
+                indices_a = random.sample(range(len(ds_a)), min(target_a * 2, len(ds_a)))
                 
-                wav, sr = sf.read(io.BytesIO(row["audio"]["bytes"]))
-                entry = self._process_wav_sample(wav, sr, genre, label_name, codec)
-                if entry:
-                    entries.append(entry)
+                count_a = 0
+                for idx in indices_a:
+                    if count_a >= target_a:
+                        break
+                    row = ds_a[idx]
+                    label_name = labels_a[row["label"]]
+                    genre = random.choice(["trap", "drill", "boom bap", "hip-hop", "lo-fi"])
+                    
+                    try:
+                        if "audio" in row and "bytes" in row["audio"] and row["audio"]["bytes"]:
+                            wav, sr = sf.read(io.BytesIO(row["audio"]["bytes"]))
+                            entry = self._process_wav_sample(wav, sr, genre, label_name, codec)
+                            if entry:
+                                entries.append(entry)
+                                count_a += 1
+                    except Exception:
+                        continue
+                print(f"  ✅ Source A Ingested: {count_a} samples")
+            except Exception as e:
+                print(f"  ⚠️ Source A warning: {e}")
 
-            # Ingest Source B (Acoustic Rock, Jazz, Funk Kits)
-            indices_b = random.sample(range(len(ds_b)), min(target_b, len(ds_b)))
-            for count, idx in enumerate(indices_b):
-                row = ds_b[idx]
-                label_str = str(row.get("label", "acoustic drum"))
-                genre = random.choice(["acoustic rock", "indie jazz", "funk", "live studio"])
+            # 3. Source B: airasoul/drum-kit (Acoustic Rock, Jazz, Funk Kits)
+            print("Ingesting Source B: airasoul/drum-kit...")
+            try:
+                ds_b = load_dataset("airasoul/drum-kit", split="train").cast_column("audio", Audio(decode=False))
+                indices_b = random.sample(range(len(ds_b)), min(target_b * 2, len(ds_b)))
                 
-                wav, sr = sf.read(io.BytesIO(row["audio"]["bytes"]))
-                entry = self._process_wav_sample(wav, sr, genre, label_str, codec)
-                if entry:
-                    entries.append(entry)
+                count_b = 0
+                for idx in indices_b:
+                    if count_b >= target_b:
+                        break
+                    row = ds_b[idx]
+                    label_str = str(row.get("label", "acoustic drum"))
+                    genre = random.choice(["acoustic rock", "indie jazz", "funk", "live studio"])
+                    
+                    try:
+                        if "audio" in row and "bytes" in row["audio"] and row["audio"]["bytes"]:
+                            wav, sr = sf.read(io.BytesIO(row["audio"]["bytes"]))
+                            entry = self._process_wav_sample(wav, sr, genre, label_str, codec)
+                            if entry:
+                                entries.append(entry)
+                                count_b += 1
+                    except Exception:
+                        continue
+                print(f"  ✅ Source B Ingested: {count_b} samples")
+            except Exception as e:
+                print(f"  ⚠️ Source B warning: {e}")
 
-            # Ingest Source C (Synthesized Analog Models: Synthwave, 80s Retro, Latin Percussion)
-            for i in range(target_synth):
+            # 4. Source C (Synthesized Analog Models: Synthwave, 80s Retro, Latin Percussion, Afrobeat)
+            needed_synth = self.max_samples - len(entries)
+            print(f"Ingesting Source C (Procedural Analog Synth & Latin/Afrobeat Models): {needed_synth} samples...")
+            for i in range(needed_synth):
                 wav, synth_prompt = generate_random_drum_sample(24000)
                 genre = random.choice(["synthwave", "80s retro", "techno", "house", "latin percussion", "afrobeat"])
                 entry = self._process_wav_sample(wav, 24000, genre, synth_prompt, codec)
