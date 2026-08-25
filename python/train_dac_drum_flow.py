@@ -1,6 +1,6 @@
 """
 train_dac_drum_flow.py
-Continuous Flow-Matching (Rectified Flow) Training Pipeline for Studio-Grade 44.1kHz Drum Synthesis.
+Continuous Flow-Matching (Rectified Flow) Training Pipeline for Multi-Genre 44.1kHz Drum Synthesis.
 """
 
 import os
@@ -19,10 +19,10 @@ import dac
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dac_drum_flow_tgssm import DACDrumFlowTGSSM, FlowDrumTGSSMConfig
-from dac_flow_dataset import DACContinuousDrumDataset, TARGET_SR
+from multi_genre_drum_dataset import MultiGenreDrumDataset, TARGET_SR
 
 def train_flow_model(
-    max_samples: int = 1500,
+    max_samples: int = 3000,
     epochs: int = 35,
     start_epoch: int = 1,
     batch_size: int = 16,
@@ -32,7 +32,7 @@ def train_flow_model(
     resume_ckpt: str = None,
 ):
     print("=" * 75)
-    print("🌊 TG-SSM Continuous Flow-Matching (44.1kHz Studio Drums) — RTX 3060")
+    print("🌊 TG-SSM Multi-Genre Continuous Flow-Matching (44.1kHz Studio Drums)")
     print("=" * 75)
 
     if device == "cuda" and not torch.cuda.is_available():
@@ -41,8 +41,8 @@ def train_flow_model(
 
     torch.cuda.empty_cache()
 
-    # 1. Dataset with 44.1kHz continuous latents (loads instantly from cache)
-    dataset = DACContinuousDrumDataset(max_samples=max_samples, device=device)
+    # 1. Multi-Genre Dataset Loader (Hip-Hop, Trap, Acoustic Rock, Jazz, Funk, Synthwave, Latin)
+    dataset = MultiGenreDrumDataset(max_samples=max_samples, device=device)
     train_size = int(0.9 * len(dataset))
     val_size = len(dataset) - train_size
     train_ds, val_ds = random_split(dataset, [train_size, val_size])
@@ -82,7 +82,6 @@ def train_flow_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-2, betas=(0.9, 0.95))
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs, eta_min=1e-5)
     
-    # Step scheduler up to start_epoch
     for _ in range(1, start_epoch):
         scheduler.step()
 
@@ -91,14 +90,15 @@ def train_flow_model(
     os.makedirs("checkpoints", exist_ok=True)
     os.makedirs("generated_audio", exist_ok=True)
 
+    # Multi-Genre Test Prompts for Milestone Monitoring
     eval_prompts = [
-        "808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass",
-        "snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click",
-        "hihat, closed hat, metallic, bright top end, crisp sheen, fast decay, short tail",
-        "handclap, clap, percussion, warm analog body, punchy mid",
+        "trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass",
+        "acoustic rock, snare drum, live studio crack, bright top end, crisp sheen, hard transient click",
+        "synthwave, 80s retro, gated snare, analog saturation, diffused room reverb, punchy mid",
+        "latin percussion, afrobeat, cowbell, woodblock, bright top end, tight gated, metallic",
     ]
 
-    print(f"\n🚀 Starting Continuous Optimal Transport Flow Matching Training from Epoch {start_epoch}...")
+    print(f"\n🚀 Starting Continuous Optimal Transport Flow Matching Training...")
     for epoch in range(start_epoch, epochs + 1):
         model.train()
         train_loss = 0.0
@@ -117,7 +117,7 @@ def train_flow_model(
             # Continuous straight flow interpolation: z_t = t * z_1 + (1 - t) * z_0
             t_expand = t.view(batch_sz, 1, 1)
             z_t = t_expand * z_1 + (1.0 - t_expand) * z_0
-            target_velocity = z_1 - z_0 # v* = z_1 - z_0
+            target_velocity = z_1 - z_0
 
             with torch.amp.autocast('cuda', enabled=(device == "cuda")):
                 pred_velocity, aux_loss = model(z_t, t, prompt_ids)
@@ -179,14 +179,14 @@ def train_flow_model(
             }, ckpt_path)
             print(f"  ⭐️ Saved Best Checkpoint -> {ckpt_path} (Val MSE: {avg_val_loss:7.5f})")
 
-        # Periodically synthesize high-fidelity 44.1kHz studio drum waveforms
+        # Periodically synthesize multi-genre 44.1kHz studio drum waveforms
         if epoch % 5 == 0 or epoch == epochs:
-            print(f"\n🎧 [Epoch {epoch}] ODE Flow Integration & 44.1kHz Audio Decoding...")
+            print(f"\n🎧 [Epoch {epoch}] Multi-Genre ODE Flow Synthesis & 44.1kHz Decoding...")
             with torch.no_grad():
                 for idx, p_text in enumerate(eval_prompts):
                     p_tokens = dataset.tokenizer.encode(
                         p_text,
-                        max_length=24,
+                        max_length=28,
                         padding="max_length",
                         truncation=True,
                         return_tensors="pt"
@@ -194,26 +194,25 @@ def train_flow_model(
 
                     gen_z = model.generate_flow(p_tokens, num_frames=43, steps=25, guidance_scale=2.5)
                     audio_44k = codec.decode(gen_z).squeeze().cpu().numpy()
-                    
                     audio_44k = (audio_44k / (np.max(np.abs(audio_44k)) + 1e-6)) * 0.95
-                    sample_fn = f"generated_audio/dac_flow_epoch_{epoch:02d}_sample_{idx+1}.wav"
+                    sample_fn = f"generated_audio/multi_genre_epoch_{epoch:02d}_sample_{idx+1}.wav"
                     sf.write(sample_fn, audio_44k, TARGET_SR)
-                    print(f"   • Tag Prompt: \"{p_text[:45]}...\" -> {sample_fn} (44.1kHz, {len(audio_44k)/TARGET_SR:.2f}s)")
+                    print(f"   • Genre Tag Prompt: \"{p_text[:45]}...\" -> {sample_fn}")
             print()
 
-    print("🎉 Continuous Flow-Matching Studio Training Complete!")
+    print("🎉 Multi-Genre Continuous Flow-Matching Training Complete!")
     return model
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--resume", type=str, default="checkpoints/dac_drum_flow_best.pt")
+    parser.add_argument("--resume", type=str, default=None)
     args = parser.parse_args()
 
     train_flow_model(
-        max_samples=1500,
+        max_samples=3000,
         epochs=35,
         batch_size=16,
         grad_accum=2,
         lr=4e-4,
-        resume_ckpt=args.resume if os.path.exists(args.resume) else None,
+        resume_ckpt=args.resume if args.resume and os.path.exists(args.resume) else None,
     )
