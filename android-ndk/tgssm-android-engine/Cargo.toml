@@ -1,0 +1,24 @@
+[package]
+name = "tgssm-android-engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tgssm_android"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "tgssm_bench"
+path = "src/bin/bench.rs"
+
+[dependencies]
+byteorder = "1.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+rand = "0.8"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"
