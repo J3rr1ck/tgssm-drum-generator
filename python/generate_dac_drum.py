@@ -1,6 +1,7 @@
 """
 generate_dac_drum.py
 Interactive CLI for 44.1kHz Studio-Grade Drum Waveform Synthesis via TG-SSM Flow Matching & DAC.
+Supports multiple high-order ODE samplers: Heun (2nd order), Midpoint, RK4, and Euler.
 """
 
 import os
@@ -25,15 +26,17 @@ def generate_studio_drum(
     checkpoint_path: str = "checkpoints/dac_drum_flow_best.pt",
     steps: int = 30,
     guidance_scale: float = 3.0,
+    sampler: str = "heun",
     device: str = "cuda",
 ):
     if device == "cuda" and not torch.cuda.is_available():
         device = "cpu"
 
     print("=" * 70)
-    print("🌊 TG-SSM 44.1kHz Studio Drum Synthesis (Optimal Transport Flow)")
+    print("🌊 TG-SSM 44.1kHz Multi-Sampler Studio Drum Synthesis")
     print("=" * 70)
     print(f"📥 Input Tag Prompt: \"{prompt}\"")
+    print(f"🔬 ODE Sampler:      {sampler.upper()} ({'2nd-Order Predictor-Corrector' if sampler == 'heun' else sampler})")
     print(f"⚙️  Compute Device:   {device} ({torch.cuda.get_device_name(0) if device == 'cuda' else 'CPU'})")
 
     if not os.path.exists(checkpoint_path):
@@ -51,7 +54,7 @@ def generate_studio_drum(
     tokenizer.pad_token = tokenizer.eos_token
     p_tokens = tokenizer.encode(
         prompt,
-        max_length=24,
+        max_length=28,
         padding="max_length",
         truncation=True,
         return_tensors="pt"
@@ -63,14 +66,15 @@ def generate_studio_drum(
     codec.eval()
 
     # 4. Continuous ODE Integration (Flow Matching)
-    print(f"\n⚡ Solving Continuous Optimal Transport ODE ({steps} integration steps, CFG={guidance_scale})...")
+    print(f"\n⚡ Solving Continuous Optimal Transport Flow ({steps} steps, CFG={guidance_scale}, Sampler={sampler.upper()})...")
     t0 = time.time()
     with torch.no_grad():
         gen_z = model.generate_flow(
             p_tokens,
             num_frames=43,
             steps=steps,
-            guidance_scale=guidance_scale
+            guidance_scale=guidance_scale,
+            sampler=sampler,
         )
         t_flow = time.time() - t0
         print(f"✅ Generated Continuous Manifold Trajectory: {list(gen_z.shape)} in {t_flow*1000:.1f} ms")
@@ -93,11 +97,12 @@ def generate_studio_drum(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate 44.1kHz drum sample from text tags via Flow Matching.")
-    parser.add_argument("--prompt", type=str, default="808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass")
-    parser.add_argument("--output", type=str, default="generated_audio/studio_808_kick.wav")
+    parser.add_argument("--prompt", type=str, default="trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click")
+    parser.add_argument("--output", type=str, default="generated_audio/studio_drum.wav")
     parser.add_argument("--ckpt", type=str, default="checkpoints/dac_drum_flow_best.pt")
     parser.add_argument("--steps", type=int, default=30)
     parser.add_argument("--cfg", type=float, default=3.0)
+    parser.add_argument("--sampler", type=str, default="heun", choices=["heun", "euler", "midpoint", "rk4"], help="ODE Sampler")
     args = parser.parse_args()
 
     generate_studio_drum(
@@ -106,4 +111,5 @@ if __name__ == "__main__":
         checkpoint_path=args.ckpt,
         steps=args.steps,
         guidance_scale=args.cfg,
+        sampler=args.sampler,
     )

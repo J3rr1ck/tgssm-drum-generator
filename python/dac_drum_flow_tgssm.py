@@ -2,8 +2,11 @@
 dac_drum_flow_tgssm.py
 Continuous Flow-Matching (Rectified Flow) TG-SSM Model for Studio-Grade 44.1kHz Drum Synthesis.
 
-Operates directly on the continuous 1024-dimensional latent manifold of DAC (Descript Audio Codec).
-Predicts continuous ODE velocity field v(z_t, t, c) with System 2 Hamiltonian Deliberation.
+Supports multiple ODE Solvers:
+- Euler (1st order)
+- Heun (2nd order Predictor-Corrector)
+- Midpoint (2nd order RK2)
+- RK4 (4th order Classic Runge-Kutta)
 """
 
 from dataclasses import dataclass
@@ -37,7 +40,6 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        # t: [Batch] in [0, 1]
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=t.device, dtype=torch.float32) * -emb)
@@ -180,7 +182,6 @@ class FlowTGSSMBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor, time_emb: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # AdaLN time conditioning
         t_mod = self.time_mlp(time_emb).unsqueeze(1)
         x_in = x + t_mod
 
@@ -193,14 +194,10 @@ class FlowTGSSMBlock(nn.Module):
         return x, aux_loss
 
 class DACDrumFlowTGSSM(nn.Module):
-    """
-    Continuous Rectified Flow Matching TG-SSM model for DAC 44.1kHz Latent Synthesis.
-    """
     def __init__(self, config: Optional[FlowDrumTGSSMConfig] = None):
         super().__init__()
         self.config = config or FlowDrumTGSSMConfig()
 
-        # Timestep embedding
         self.time_embed = nn.Sequential(
             SinusoidalTimeEmbedding(self.config.d_model),
             nn.Linear(self.config.d_model, self.config.d_model),
@@ -208,7 +205,6 @@ class DACDrumFlowTGSSM(nn.Module):
             nn.Linear(self.config.d_model, self.config.d_model),
         )
 
-        # Text prompt encoder
         self.text_embeddings = nn.Embedding(self.config.vocab_size, self.config.d_model)
         self.text_proj = nn.Sequential(
             RMSNormFP32(self.config.d_model),
@@ -216,16 +212,13 @@ class DACDrumFlowTGSSM(nn.Module):
             nn.SiLU(),
         )
 
-        # Continuous Latent In-Projection (1024 -> d_model)
         self.latent_in_proj = nn.Linear(self.config.latent_dim, self.config.d_model)
 
-        # Backbone blocks
         self.layers = nn.ModuleList([
             FlowTGSSMBlock(self.config) for _ in range(self.config.n_layers)
         ])
         self.final_norm = RMSNormFP32(self.config.d_model)
 
-        # Continuous Velocity Output Head (d_model -> 1024)
         self.velocity_head = nn.Sequential(
             RMSNormFP32(self.config.d_model),
             FP4Linear(self.config.d_model, self.config.latent_dim, bias=False, block_size=self.config.fp4_block_size)
@@ -233,28 +226,21 @@ class DACDrumFlowTGSSM(nn.Module):
 
     def forward(
         self,
-        z_t: torch.Tensor,        # [Batch, 1024, Frames]
-        t: torch.Tensor,          # [Batch] in [0, 1]
-        prompt_ids: torch.Tensor, # [Batch, PromptLen]
+        z_t: torch.Tensor,
+        t: torch.Tensor,
+        prompt_ids: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Predicts continuous ODE velocity field v(z_t, t, prompt).
-        """
         batch, _, num_frames = z_t.shape
-        t_emb = self.time_embed(t) # [Batch, d_model]
+        t_emb = self.time_embed(t)
 
-        # 1. Text conditioning
         text_emb = self.text_embeddings(prompt_ids)
-        text_cond = self.text_proj(text_emb) # [Batch, PromptLen, d_model]
+        text_cond = self.text_proj(text_emb)
 
-        # 2. Continuous Latent Projection
-        z_transposed = z_t.transpose(1, 2) # [Batch, Frames, 1024]
-        audio_emb = self.latent_in_proj(z_transposed) # [Batch, Frames, d_model]
+        z_transposed = z_t.transpose(1, 2)
+        audio_emb = self.latent_in_proj(z_transposed)
 
-        # Concatenate text prompt and audio continuous trajectory
         x = torch.cat([text_cond, audio_emb], dim=1)
 
-        # 3. TG-SSM Continuous State-Space Propagation
         aux_losses = []
         for layer in self.layers:
             x, aux_loss = layer(x, t_emb)
@@ -263,53 +249,90 @@ class DACDrumFlowTGSSM(nn.Module):
         x = self.final_norm(x)
         aux_total = torch.stack(aux_losses).mean()
 
-        # Extract only audio frame outputs
         prompt_len = prompt_ids.shape[1]
-        audio_out = x[:, prompt_len:, :] # [Batch, Frames, d_model]
+        audio_out = x[:, prompt_len:, :]
 
-        # 4. Continuous Velocity Field Prediction
-        pred_velocity = self.velocity_head(audio_out) # [Batch, Frames, 1024]
-        pred_velocity = pred_velocity.transpose(1, 2) # [Batch, 1024, Frames]
+        pred_velocity = self.velocity_head(audio_out)
+        pred_velocity = pred_velocity.transpose(1, 2)
 
         return pred_velocity, aux_total
+
+    def _eval_velocity(
+        self,
+        z_t: torch.Tensor,
+        t_val: float,
+        prompt_ids: torch.Tensor,
+        uncond_ids: torch.Tensor,
+        guidance_scale: float,
+    ) -> torch.Tensor:
+        batch = prompt_ids.shape[0]
+        device = prompt_ids.device
+        t_tensor = torch.full((batch,), t_val, device=device, dtype=torch.float32)
+
+        v_cond, _ = self.forward(z_t, t_tensor, prompt_ids)
+        if guidance_scale > 1.0:
+            v_uncond, _ = self.forward(z_t, t_tensor, uncond_ids)
+            return v_uncond + guidance_scale * (v_cond - v_uncond)
+        return v_cond
 
     @torch.no_grad()
     def generate_flow(
         self,
         prompt_ids: torch.Tensor,
-        num_frames: int = 43, # 0.5s @ 44.1kHz
+        num_frames: int = 43,
         steps: int = 25,
-        guidance_scale: float = 2.5,
+        guidance_scale: float = 3.0,
+        sampler: str = "heun",  # "euler", "heun", "midpoint", "rk4"
     ) -> torch.Tensor:
         """
-        Euler ODE integration along continuous optimal transport flow from z_0 ~ N(0, I) to z_1.
+        ODE integration along continuous optimal transport flow.
+        Supported samplers: 'heun' (default 2nd order), 'euler', 'midpoint', 'rk4'.
         """
         self.eval()
         device = prompt_ids.device
         batch = prompt_ids.shape[0]
 
-        # Initial random Gaussian latent noise
         z_t = torch.randn(batch, self.config.latent_dim, num_frames, device=device)
         dt = 1.0 / steps
-
-        # Unconditioned prompt for Classifier-Free Guidance (CFG)
         uncond_ids = torch.zeros_like(prompt_ids)
 
         for i in range(steps):
-            t_val = i / steps
-            t_tensor = torch.full((batch,), t_val, device=device, dtype=torch.float32)
+            t_curr = i / steps
+            t_next = min(1.0, (i + 1) / steps)
 
-            # Conditional velocity
-            v_cond, _ = self.forward(z_t, t_tensor, prompt_ids)
-            
-            # Unconditional velocity for CFG
-            if guidance_scale > 1.0:
-                v_uncond, _ = self.forward(z_t, t_tensor, uncond_ids)
-                v = v_uncond + guidance_scale * (v_cond - v_uncond)
+            if sampler.lower() == "euler":
+                # 1st order Euler
+                v = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
+                z_t = z_t + dt * v
+
+            elif sampler.lower() == "heun":
+                # 2nd order Heun (Predictor-Corrector)
+                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
+                z_pred = z_t + dt * v1
+                v2 = self._eval_velocity(z_pred, t_next, prompt_ids, uncond_ids, guidance_scale)
+                v_avg = 0.5 * (v1 + v2)
+                z_t = z_t + dt * v_avg
+
+            elif sampler.lower() == "midpoint":
+                # 2nd order Midpoint RK2
+                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
+                z_mid = z_t + (0.5 * dt) * v1
+                t_mid = t_curr + 0.5 * dt
+                v_mid = self._eval_velocity(z_mid, t_mid, prompt_ids, uncond_ids, guidance_scale)
+                z_t = z_t + dt * v_mid
+
+            elif sampler.lower() == "rk4":
+                # 4th order Runge-Kutta
+                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
+                z2 = z_t + (0.5 * dt) * v1
+                v2 = self._eval_velocity(z2, t_curr + 0.5 * dt, prompt_ids, uncond_ids, guidance_scale)
+                z3 = z_t + (0.5 * dt) * v2
+                v3 = self._eval_velocity(z3, t_curr + 0.5 * dt, prompt_ids, uncond_ids, guidance_scale)
+                z4 = z_t + dt * v3
+                v4 = self._eval_velocity(z4, t_next, prompt_ids, uncond_ids, guidance_scale)
+                z_t = z_t + (dt / 6.0) * (v1 + 2 * v2 + 2 * v3 + v4)
+
             else:
-                v = v_cond
-
-            # Euler Step: z_{t + dt} = z_t + dt * v(z_t, t)
-            z_t = z_t + dt * v
+                raise ValueError(f"Unknown sampler: {sampler}. Choose from 'heun', 'euler', 'midpoint', 'rk4'")
 
         return z_t
