@@ -1,15 +1,15 @@
-# 🥁 TG-SSM: Text-to-Drum Waveform Synthesis & Mobile Inference Engine
+# 🥁 TG-SSM: Continuous Flow-Matching Text-to-Drum Waveform Generator & Mobile Inference Engine
 
-Continuous State-Space Model (**TG-SSM**) adapted for text-conditioned drum sample waveform synthesis, paired with an ultra-fast **Android NDK Rust native inference engine** benchmarked on physical **Pixel 10a (`stallion_beta`)** and trained on real studio drum datasets via **NVIDIA GeForce RTX 3060**.
+Continuous State-Space Model (**TG-SSM**) adapted for text-conditioned 44.1kHz studio drum sample waveform synthesis via **Optimal Transport Flow Matching (Rectified Flow)** and **DAC (Descript Audio Codec)**, paired with an ultra-fast **Android NDK Rust native inference engine** benchmarked on physical **Pixel 10a (`stallion_beta`)** and trained on real studio drum datasets via **NVIDIA GeForce RTX 3060**.
 
 ---
 
 ## 🌟 Overview & Features
 
-1. **Continuous Selective SSM (S6) Backbone**:
-   - Discretizes continuous state-space matrices ($\bar{A}, \bar{B}, C$) dynamically conditioned on text tags.
-   - **System 2 Hamiltonian Latent Deliberation Core**: Multi-step ODE shooting along the acoustic manifold to refine transient dynamics and sub-bass resonance.
-   - **Multi-Codebook RVQ Head**: 8 parallel projection heads matching EnCodec 24kHz RVQ representations.
+1. **Continuous Optimal Transport Flow Matching (Rectified Flow)**:
+   - Operates directly in the continuous 1024-dimensional acoustic manifold of **DAC 44.1kHz**, completely bypassing discrete RVQ codebook quantization artifacts and robotic phase jitter.
+   - Vector field velocity formulation: $\mathcal{L}_{\text{FM}} = \| v_\theta(z_t, t, c) - (z_1 - z_0) \|^2$.
+   - **System 2 Hamiltonian Latent Deliberation Core**: Multi-step continuous ODE propagation smoothing transient attacks and resonant sub-bass drops.
 
 2. **Real Dataset Ingestion**:
    - Trained on real studio drum one-shots from Hugging Face (`yojul/one-shot-hip-hop-drums`: 19,673 samples across 808s, kicks, snares, claps, hi-hats, open hats, cymbals).
@@ -22,30 +22,35 @@ Continuous State-Space Model (**TG-SSM**) adapted for text-conditioned drum samp
 
 ---
 
-## 🎧 Generated Audio Samples
+## 🎧 Generated Studio Audio Samples (44.1kHz Master Quality)
 
 Located in `generated_audio/`:
 
-* **`test_808_kick.wav`**: Prompt: *"808, sub kick, deep low end, heavy sub, 50Hz sub punch, hard transient"* (`24kHz`, `0.64s`)
-* **`test_crisp_snare.wav`**: Prompt: *"snare, drum, acoustic snare, bright, crisp, hard transient, snappy wire rattle"* (`24kHz`, `0.64s`)
-* **`test_trap_hat.wav`**: Prompt: *"hihat, closed hat, metallic, crisp, fast decay, short tail, trap sizzle"* (`24kHz`, `0.64s`)
+| Audio Sample | Target Drum / Prompt | Sample Rate | Duration | RMS Energy | Synthesis Method |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`dac_flow_epoch_15_sample_1.wav`** | *"808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click, resonant sub bass"* | `44,100 Hz` | `0.50s` | `0.2060` | 25-step Euler Flow Matching + DAC 44.1kHz |
+| **`dac_flow_epoch_15_sample_2.wav`** | *"snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click"* | `44,100 Hz` | `0.50s` | `0.1015` | 25-step Euler Flow Matching + DAC 44.1kHz |
+| **`dac_flow_epoch_15_sample_3.wav`** | *"hihat, closed hat, metallic, bright top end, crisp sheen, fast decay, short tail"* | `44,100 Hz` | `0.50s` | `0.2002` | 25-step Euler Flow Matching + DAC 44.1kHz |
+| **`dac_flow_epoch_15_sample_4.wav`** | *"handclap, clap, percussion, warm analog body, punchy mid"* | `44,100 Hz` | `0.50s` | `0.1382` | 25-step Euler Flow Matching + DAC 44.1kHz |
 
 ---
 
-## 🚀 Quickstart
+## 🚀 Quickstart & Inference
 
-### 1. Generate Drum Samples from Text Tags (Python / RTX 3060)
+### 1. Generate 44.1kHz Studio Drum Samples from Text Tags (Flow Matching / RTX 3060)
 
 ```bash
-# Generate 808 kick
-PYTHONPATH=python python3 python/generate_drum.py \
-  --prompt "808, sub kick, deep low end, heavy sub, 50Hz sub punch" \
-  --output generated_audio/my_808.wav
+# Generate 44.1kHz 808 Sub Kick
+PYTHONPATH=python python3 python/generate_dac_drum.py \
+  --prompt "808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click" \
+  --output generated_audio/studio_808.wav \
+  --steps 30 --cfg 3.0
 
-# Generate Crisp Snare
-PYTHONPATH=python python3 python/generate_drum.py \
-  --prompt "snare, drum, acoustic snare, bright, crisp, snappy wire rattle" \
-  --output generated_audio/my_snare.wav
+# Generate 44.1kHz Acoustic Snare
+PYTHONPATH=python python3 python/generate_dac_drum.py \
+  --prompt "snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click" \
+  --output generated_audio/studio_snare.wav \
+  --steps 30 --cfg 3.0
 ```
 
 ### 2. Run Android NDK Benchmark (Physical Device / Emulator)
