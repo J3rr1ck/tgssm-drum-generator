@@ -1,10 +1,6 @@
 """
 multi_genre_drum_dataset.py
-Diverse Multi-Genre Drum Dataset Loader for 44.1kHz Continuous Flow-Matching TG-SSM.
-Combines multiple real studio datasets from Hugging Face with robust error handling:
-- yojul/one-shot-hip-hop-drums (Trap, Drill, Boom Bap, 808s)
-- airasoul/drum-kit (Acoustic Rock, Indie, Funk Kits)
-- DSP Analog Synth Physical Models (808, 909, LinnDrum, Synthwave, Latin Percussion)
+Diverse Multi-Genre & High-Definition Percussion Dataset Loader for 44.1kHz Continuous Flow-Matching TG-SSM.
 """
 
 import io
@@ -34,7 +30,6 @@ def analyze_acoustic_attributes(wav: np.ndarray, sr: int, genre_hint: str, label
     
     # 1. Add genre and type tags
     tags.append(genre_hint)
-    
     label_norm = label_hint.lower().replace("_", " ").replace("-", " ")
     tags.append(label_norm)
 
@@ -86,6 +81,10 @@ def analyze_acoustic_attributes(wav: np.ndarray, sr: int, genre_hint: str, label
             tags.append("resonant sub bass")
             tags.append("clean sine sweep")
 
+    if "cowbell" in label_norm or "bell" in label_norm or "cymbal" in label_norm:
+        tags.append("metallic ring")
+        tags.append("inharmonic overtone")
+
     # Deduplicate while preserving order
     seen = set()
     unique = [t for t in tags if not (t in seen or seen.add(t))]
@@ -94,7 +93,7 @@ def analyze_acoustic_attributes(wav: np.ndarray, sr: int, genre_hint: str, label
 class MultiGenreDrumDataset(Dataset):
     def __init__(
         self,
-        max_samples: int = 3000,
+        max_samples: int = 5000,
         cache_dir: str = "multi_genre_cache",
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
@@ -112,7 +111,7 @@ class MultiGenreDrumDataset(Dataset):
             self.entries = cached["entries"]
             print(f"✅ Loaded {len(self.entries):,} multi-genre continuous drum latents!")
         else:
-            print(f"Aggregating and encoding {max_samples} multi-genre drum samples with DAC 44.1kHz...")
+            print(f"Aggregating and encoding {max_samples} broadened multi-genre drum samples with DAC 44.1kHz...")
             self.entries = self._build_cache()
             torch.save({"entries": self.entries}, self.cache_file)
             print(f"✅ Saved multi-genre continuous latent cache ({len(self.entries)} samples)!")
@@ -124,25 +123,26 @@ class MultiGenreDrumDataset(Dataset):
         codec.eval()
 
         entries = []
-        target_a = int(self.max_samples * 0.60)
-        target_b = int(self.max_samples * 0.25)
-        target_synth = self.max_samples - target_a - target_b
+        target_a = int(self.max_samples * 0.55) # ~2750 from yojul (cymbals, claps, snares, 808s, kicks, open hats)
+        target_b = int(self.max_samples * 0.25) # ~1250 from airasoul
+        target_synth = self.max_samples - target_a - target_b # ~1000 authentic cowbells, agogo, timbales, shakers
 
         with torch.no_grad():
-            # 2. Source A: yojul/one-shot-hip-hop-drums (Trap, Drill, Boom Bap, 808s)
-            print("Ingesting Source A: yojul/one-shot-hip-hop-drums...")
+            # 2. Source A: yojul/one-shot-hip-hop-drums
+            print("Ingesting Source A (19.6k real drum one-shots across all categories)...")
             try:
                 ds_a = load_dataset("yojul/one-shot-hip-hop-drums", split="train").cast_column("audio", Audio(decode=False))
                 labels_a = ds_a.features["label"].names
-                indices_a = random.sample(range(len(ds_a)), min(target_a * 2, len(ds_a)))
                 
+                # Balanced sampling across all categories
+                indices_a = random.sample(range(len(ds_a)), min(target_a * 2, len(ds_a)))
                 count_a = 0
                 for idx in indices_a:
                     if count_a >= target_a:
                         break
                     row = ds_a[idx]
                     label_name = labels_a[row["label"]]
-                    genre = random.choice(["trap", "drill", "boom bap", "hip-hop", "lo-fi"])
+                    genre = random.choice(["trap", "drill", "boom bap", "hip-hop", "lo-fi", "west coast"])
                     
                     try:
                         if "audio" in row and "bytes" in row["audio"] and row["audio"]["bytes"]:
@@ -157,12 +157,11 @@ class MultiGenreDrumDataset(Dataset):
             except Exception as e:
                 print(f"  ⚠️ Source A warning: {e}")
 
-            # 3. Source B: airasoul/drum-kit (Acoustic Rock, Jazz, Funk Kits)
-            print("Ingesting Source B: airasoul/drum-kit...")
+            # 3. Source B: airasoul/drum-kit
+            print("Ingesting Source B (Acoustic Rock, Jazz, Funk Kits)...")
             try:
                 ds_b = load_dataset("airasoul/drum-kit", split="train").cast_column("audio", Audio(decode=False))
                 indices_b = random.sample(range(len(ds_b)), min(target_b * 2, len(ds_b)))
-                
                 count_b = 0
                 for idx in indices_b:
                     if count_b >= target_b:
@@ -184,13 +183,13 @@ class MultiGenreDrumDataset(Dataset):
             except Exception as e:
                 print(f"  ⚠️ Source B warning: {e}")
 
-            # 4. Source C (Synthesized Analog Models: Synthwave, 80s Retro, Latin Percussion, Afrobeat)
+            # 4. Source C: Authentic Roland TR-808 Cowbells, Agogos, Timbales, Shakers
             needed_synth = self.max_samples - len(entries)
-            print(f"Ingesting Source C (Procedural Analog Synth & Latin/Afrobeat Models): {needed_synth} samples...")
+            print(f"Ingesting Source C (Authentic TR-808 Cowbells & Latin/Afrobeat Percussion): {needed_synth} samples...")
             for i in range(needed_synth):
-                wav, synth_prompt = generate_random_drum_sample(24000)
-                genre = random.choice(["synthwave", "80s retro", "techno", "house", "latin percussion", "afrobeat"])
-                entry = self._process_wav_sample(wav, 24000, genre, synth_prompt, codec)
+                wav, synth_prompt = generate_random_drum_sample(TARGET_SR)
+                genre = random.choice(["latin percussion", "afrobeat", "synthwave", "80s retro", "techno", "house", "trap"])
+                entry = self._process_wav_sample(wav, TARGET_SR, genre, synth_prompt, codec)
                 if entry:
                     entries.append(entry)
 
