@@ -13,9 +13,9 @@ Supported and trained on local **NVIDIA GeForce RTX 3060** & **Google AI Ultra /
    - Vector field velocity formulation: $\mathcal{L}_{\text{FM}} = \| v_\theta(z_t, t, c) - (z_1 - z_0) \|^2$.
 
 2. **High-Order ODE Solvers**:
-   - **`Heun` (2nd-Order Predictor-Corrector)**: Accurately tracks rapid curvature in transient bursts and pitch drops, yielding punchier transients and cleaner sub bass.
-   - **`RK4` (4th-Order Classic Runge-Kutta)**: High-precision 4th-order multi-stage integration.
-   - **`Midpoint` (2nd-Order RK2)**: Balanced harmonic trajectory solver.
+   - **`Heun` (2nd-Order Predictor-Corrector)**: Measures velocity at both start and predicted endpoints, averaging curvature for crisp transient snaps and solid sub-bass tracking.
+   - **`RK4` (4th-Order Classic Runge-Kutta)**: High-precision 4-stage numerical integration.
+   - **`Midpoint` (2nd-Order RK2)**: Smooth midpoint trajectory solver.
    - **`Euler` (1st-Order)**: Fast linear flow solver for rapid drafts.
 
 3. **Diverse Multi-Genre Dataset Mixer**:
@@ -27,25 +27,41 @@ Supported and trained on local **NVIDIA GeForce RTX 3060** & **Google AI Ultra /
 
 ---
 
-## 🎧 Master Audio Previews (44.1kHz Studio Master Quality)
+## 🎧 Master Audio Previews (Organized by Sampler)
 
-Located in `generated_audio/`:
+Located in `generated_audio/<sampler>/`:
 
 ### 🔬 1. Heun 2nd-Order Predictor-Corrector (`generated_audio/heun/`)
 
-| Audio Sample | Target Drum / Conditioning Prompt | Sample Rate | Duration | Sampler |
-| :--- | :--- | :--- | :--- | :--- |
-| **`master_heun_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **Heun (2nd-Order)** |
-| **`master_heun_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | **Heun (2nd-Order)** |
-
-### ⚡ 2. Euler 1st-Order Multi-Genre Suite (`generated_audio/euler/`)
-
-| Audio Sample | Target Drum / Conditioning Prompt | Sample Rate | Duration | RMS Energy | Epoch |
+| Audio Sample | Target Drum / Conditioning Tag Prompt | Sample Rate | Duration | RMS Energy | Inference Time |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`multi_genre_epoch_35_sample_1.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.4403`** | **Master (Epoch 35)** |
-| **`multi_genre_epoch_35_sample_2.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | `0.1942` | **Master (Epoch 35)** |
-| **`multi_genre_epoch_35_sample_3.wav`** | *"synthwave, 80s retro, gated snare, analog saturation, diffused room reverb"* | `44,100 Hz` | `0.50s` | `0.1723` | **Master (Epoch 35)** |
-| **`multi_genre_epoch_35_sample_4.wav`** | *"latin percussion, afrobeat, cowbell, woodblock, bright top end, metallic"* | `44,100 Hz` | `0.50s` | `0.1899` | **Master (Epoch 35)** |
+| **`master_heun_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.3559`** | `11.7s` |
+| **`master_heun_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | **`0.2015`** | `11.0s` |
+| **`master_heun_synthwave.wav`** | *"synthwave, 80s retro, gated snare, analog saturation, diffused room reverb"* | `44,100 Hz` | `0.50s` | **`0.2198`** | `10.3s` |
+| **`master_heun_cowbell.wav`** | *"latin percussion, afrobeat, cowbell, woodblock, bright top end, metallic"* | `44,100 Hz` | `0.50s` | **`0.2615`** | `10.7s` |
+
+### ⚡ 2. RK4 4th-Order Classic Runge-Kutta (`generated_audio/rk4/`)
+
+| Audio Sample | Target Drum / Conditioning Tag Prompt | Sample Rate | Duration | RMS Energy | Inference Time |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`master_rk4_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.4060`** | `21.1s` |
+| **`master_rk4_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | **`0.1621`** | `20.7s` |
+| **`master_rk4_synthwave.wav`** | *"synthwave, 80s retro, gated snare, analog saturation, diffused room reverb"* | `44,100 Hz` | `0.50s` | **`0.2019`** | `21.1s` |
+| **`master_rk4_cowbell.wav`** | *"latin percussion, afrobeat, cowbell, woodblock, bright top end, metallic"* | `44,100 Hz` | `0.50s` | **`0.1736`** | `20.8s` |
+
+### 🌊 3. Midpoint 2nd-Order RK2 (`generated_audio/midpoint/`)
+
+| Audio Sample | Target Drum / Conditioning Tag Prompt | Sample Rate | Duration | RMS Energy | Inference Time |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`master_midpoint_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.4195`** | `10.3s` |
+| **`master_midpoint_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | **`0.1522`** | `11.3s` |
+| **`master_midpoint_synthwave.wav`** | *"synthwave, 80s retro, gated snare, analog saturation, diffused room reverb"* | `44,100 Hz` | `0.50s` | **`0.1520`** | `10.5s` |
+| **`master_midpoint_cowbell.wav`** | *"latin percussion, afrobeat, cowbell, woodblock, bright top end, metallic"* | `44,100 Hz` | `0.50s` | **`0.1706`** | `10.5s` |
+
+### 🚀 4. Euler 1st-Order Flow (`generated_audio/euler/`)
+
+* Master Multi-Genre Samples: `master_euler_808.wav`, `master_euler_snare.wav`, `master_euler_synthwave.wav`, `master_euler_cowbell.wav` (`~5.0s` per sample).
+* Training Checkpoint Audio Archive: `generated_audio/euler/training_checkpoints/` (Historical Epoch 5–35 milestone previews).
 
 ---
 
