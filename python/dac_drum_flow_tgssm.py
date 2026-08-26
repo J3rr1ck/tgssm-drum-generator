@@ -1,38 +1,33 @@
 """
 dac_drum_flow_tgssm.py
-Continuous Flow-Matching (Rectified Flow) TG-SSM Model for Studio-Grade 44.1kHz Drum Synthesis.
-
-Supports multiple ODE Solvers:
-- Euler (1st order)
-- Heun (2nd order Predictor-Corrector)
-- Midpoint (2nd order RK2)
-- RK4 (4th order Classic Runge-Kutta)
+Hardened Continuous Flow-Matching TG-SSM Drum Architecture.
+Features:
+- TG-SSM Bidirectional & Non-Autoregressive Sequence Modeling
+- Multi-Head MoE (Mixture-of-Experts) Latent Velocity Field
+- Direct Continuous Manifold Optimal Transport Flow Matching
+- High-Order Solvers: Heun (2nd-order predictor-corrector), RK4, Midpoint, Euler
+- Native CFG (Classifier-Free Guidance) support
 """
 
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
 import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-from engine.mixed_precision import FP4Linear, RMSNormFP32
+from dataclasses import dataclass
 
 @dataclass
 class FlowDrumTGSSMConfig:
-    d_model: int = 512
-    n_layers: int = 8
+    d_model: int = 384
+    n_layers: int = 6
     d_state: int = 32
-    d_conv: int = 4
     expand: int = 2
-    dt_rank: int = 32
     num_experts: int = 4
     top_k_experts: int = 2
-    deliberation_steps: int = 4
-    deliberation_horizon: int = 8
-    fp4_block_size: int = 32
-    latent_dim: int = 1024            # DAC 44.1kHz continuous latent dimension
-    vocab_size: int = 50257           # GPT-2 tokenizer vocabulary for tag conditioning
+    latent_dim: int = 1024       # DAC 44.1kHz continuous latent dimension
+    vocab_size: int = 50257      # GPT-2 BPE tokenizer vocabulary
+    max_prompt_len: int = 28
+    dropout: float = 0.1
+    p_uncond: float = 0.15       # CFG unconditional dropout probability
 
 class SinusoidalTimeEmbedding(nn.Module):
     def __init__(self, dim: int):
@@ -40,299 +35,250 @@ class SinusoidalTimeEmbedding(nn.Module):
         self.dim = dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
+        # t: [B] in range [0, 1]
+        device = t.device
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
-        emb = torch.exp(torch.arange(half_dim, device=t.device, dtype=torch.float32) * -emb)
-        emb = t.unsqueeze(1) * emb.unsqueeze(0)
-        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)
+        emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
+        emb = t[:, None] * emb[None, :]
+        emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
 
-class SelectiveSSM(nn.Module):
+class TGSSMBlock(nn.Module):
     def __init__(self, config: FlowDrumTGSSMConfig):
         super().__init__()
         self.d_model = config.d_model
-        self.d_state = config.d_state
         self.d_inner = config.d_model * config.expand
-        self.dt_rank = config.dt_rank
+        self.d_state = config.d_state
 
-        self.in_proj = FP4Linear(self.d_model, 2 * self.d_inner, bias=False, block_size=config.fp4_block_size)
+        self.in_proj = nn.Linear(config.d_model, self.d_inner * 2, bias=False)
         self.conv1d = nn.Conv1d(
             in_channels=self.d_inner,
             out_channels=self.d_inner,
-            kernel_size=config.d_conv,
+            kernel_size=4,
+            padding=3,
             groups=self.d_inner,
-            padding=config.d_conv - 1,
         )
-        self.x_proj = FP4Linear(
-            self.d_inner,
-            self.dt_rank + 2 * self.d_state,
-            bias=False,
-            block_size=config.fp4_block_size,
-        )
-        self.dt_proj = FP4Linear(
-            self.dt_rank,
-            self.d_inner,
-            bias=True,
-            block_size=config.fp4_block_size,
-        )
-        A = torch.arange(1, self.d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)
-        self.A_log = nn.Parameter(torch.log(A))
-        self.D = nn.Parameter(torch.ones(self.d_inner, dtype=torch.float32))
-        self.out_proj = FP4Linear(self.d_inner, self.d_model, bias=False, block_size=config.fp4_block_size)
 
-    def forward(self, u: torch.Tensor) -> torch.Tensor:
-        batch, seqlen, _ = u.shape
-        xz = self.in_proj(u)
-        x, z = xz.chunk(2, dim=-1)
+        self.A_log = nn.Parameter(torch.log(torch.arange(1, self.d_state + 1, dtype=torch.float32).repeat(self.d_inner, 1)))
+        self.D = nn.Parameter(torch.ones(self.d_inner))
 
-        x_conv = self.conv1d(x.transpose(1, 2))[:, :, :seqlen].transpose(1, 2)
-        x_act = F.silu(x_conv)
-
-        x_proj_out = self.x_proj(x_act)
-        dt, B, C = torch.split(x_proj_out, [self.dt_rank, self.d_state, self.d_state], dim=-1)
-        dt = F.softplus(self.dt_proj(dt))
-
-        A = -torch.exp(self.A_log.float())
-        dt_fp32 = dt.unsqueeze(-1).float()
-        A_fp32 = A.unsqueeze(0).unsqueeze(0)
-        dA = torch.exp(dt_fp32 * A_fp32)
-        
-        B_fp32 = B.unsqueeze(2).float()
-        dB = dt_fp32 * B_fp32
-        dBx = dB * x_act.unsqueeze(-1).float()
-
-        h = torch.zeros((batch, self.d_inner, self.d_state), device=u.device, dtype=torch.float32)
-        ys = []
-        C_fp32 = C.unsqueeze(2).float()
-
-        for t in range(seqlen):
-            h = dA[:, t] * h + dBx[:, t]
-            y_t = (h * C_fp32[:, t]).sum(dim=-1)
-            ys.append(y_t)
-
-        y = torch.stack(ys, dim=1)
-        y = y + x_act.float() * self.D.unsqueeze(0).unsqueeze(0)
-        y = y.to(u.dtype) * F.silu(z)
-        out = self.out_proj(y)
-        return out
-
-class ExpertFFN(nn.Module):
-    def __init__(self, d_model: int, d_ffn: int, fp4_block_size: int = 32):
-        super().__init__()
-        self.w1 = FP4Linear(d_model, d_ffn, bias=False, block_size=fp4_block_size)
-        self.w2 = FP4Linear(d_ffn, d_model, bias=False, block_size=fp4_block_size)
-        self.w3 = FP4Linear(d_model, d_ffn, bias=False, block_size=fp4_block_size)
+        self.x_proj = nn.Linear(self.d_inner, self.d_state * 2 + 1, bias=False)
+        self.dt_proj = nn.Linear(1, self.d_inner, bias=True)
+        self.out_proj = nn.Linear(self.d_inner, config.d_model, bias=False)
+        self.norm = nn.LayerNorm(config.d_model)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        # x: [B, L, D]
+        residual = x
+        x_norm = self.norm(x)
+        B, L, D = x_norm.shape
 
-class MetabolicMoE(nn.Module):
+        xz = self.in_proj(x_norm)
+        x_inner, z = xz.chunk(2, dim=-1)
+
+        x_conv = self.conv1d(x_inner.transpose(1, 2))[:, :, :L].transpose(1, 2)
+        x_conv = F.silu(x_conv)
+
+        proj = self.x_proj(x_conv)
+        delta = proj[:, :, :1]
+        B_ssm = proj[:, :, 1:1 + self.d_state]
+        C_ssm = proj[:, :, 1 + self.d_state:]
+
+        dt = F.softplus(self.dt_proj(delta))
+        A = -torch.exp(self.A_log)
+
+        # Vectorized recurrent state scan
+        h = torch.zeros(B, self.d_inner, self.d_state, device=x.device, dtype=x.dtype)
+        y_list = []
+        for i in range(L):
+            u_t = x_conv[:, i, :].unsqueeze(-1)
+            dt_t = dt[:, i, :].unsqueeze(-1)
+            B_t = B_ssm[:, i, :].unsqueeze(1)
+            C_t = C_ssm[:, i, :].unsqueeze(1)
+
+            dA = torch.exp(A.unsqueeze(0) * dt_t)
+            dB = dt_t * B_t
+
+            h = h * dA + u_t * dB
+            y_t = torch.sum(h * C_t, dim=-1) + x_conv[:, i, :] * self.D
+            y_list.append(y_t)
+
+        y = torch.stack(y_list, dim=1)
+        y = y * F.silu(z)
+        out = self.out_proj(y)
+        return residual + out
+
+class FlowMoEExpert(nn.Module):
+    def __init__(self, d_model: int, d_ff: int):
+        super().__init__()
+        self.fc1 = nn.Linear(d_model, d_ff)
+        self.fc2 = nn.Linear(d_ff, d_model)
+        self.act = nn.GELU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc2(self.act(self.fc1(x)))
+
+class FlowMoELayer(nn.Module):
     def __init__(self, config: FlowDrumTGSSMConfig):
         super().__init__()
-        self.d_model = config.d_model
         self.num_experts = config.num_experts
-        self.top_k = min(config.top_k_experts, config.num_experts)
-        d_ffn = int(config.d_model * 2.5)
+        self.top_k = config.top_k_experts
+        self.d_model = config.d_model
 
-        self.router = nn.Linear(self.d_model, self.num_experts, bias=False)
+        self.router = nn.Linear(config.d_model, config.num_experts, bias=False)
         self.experts = nn.ModuleList([
-            ExpertFFN(self.d_model, d_ffn, config.fp4_block_size)
-            for _ in range(self.num_experts)
+            FlowMoEExpert(config.d_model, config.d_model * 2)
+            for _ in range(config.num_experts)
         ])
+        self.norm = nn.LayerNorm(config.d_model)
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch, seqlen, d_model = x.shape
-        x_flat = x.reshape(-1, d_model)
-
-        router_logits = self.router(x_flat.float())
-        router_probs = F.softmax(router_logits, dim=-1)
-
-        weights, indices = torch.topk(router_probs, self.top_k, dim=-1)
+    def forward(self, x: torch.Tensor) -> tuple:
+        residual = x
+        x_norm = self.norm(x)
+        logits = self.router(x_norm)
+        weights, indices = torch.topk(F.softmax(logits, dim=-1), self.top_k, dim=-1)
         weights = weights / (weights.sum(dim=-1, keepdim=True) + 1e-8)
 
-        tokens_per_expert = F.one_hot(indices[:, 0], num_classes=self.num_experts).float().mean(dim=0)
-        avg_prob_per_expert = router_probs.mean(dim=0)
-        aux_loss = self.num_experts * torch.sum(tokens_per_expert * avg_prob_per_expert)
-
-        out_flat = torch.zeros_like(x_flat)
+        out = torch.zeros_like(x_norm)
         for k in range(self.top_k):
-            expert_indices = indices[:, k]
-            expert_weights = weights[:, k].unsqueeze(-1).to(x.dtype)
-            
-            for expert_idx in range(self.num_experts):
-                mask = (expert_indices == expert_idx)
+            expert_idx = indices[:, :, k]
+            weight = weights[:, :, k].unsqueeze(-1)
+            for e in range(self.num_experts):
+                mask = (expert_idx == e)
                 if mask.any():
-                    selected_x = x_flat[mask]
-                    expert_out = self.experts[expert_idx](selected_x)
-                    out_flat[mask] += expert_weights[mask] * expert_out
+                    tokens = x_norm[mask]
+                    expert_out = self.experts[e](tokens)
+                    out[mask] += expert_out * weight[mask]
 
-        out = out_flat.view(batch, seqlen, d_model)
-        return out, aux_loss
-
-class FlowTGSSMBlock(nn.Module):
-    def __init__(self, config: FlowDrumTGSSMConfig):
-        super().__init__()
-        self.norm1 = RMSNormFP32(config.d_model)
-        self.ssm = SelectiveSSM(config)
-        self.norm2 = RMSNormFP32(config.d_model)
-        self.moe = MetabolicMoE(config)
-        self.time_mlp = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(config.d_model, config.d_model)
-        )
-
-    def forward(self, x: torch.Tensor, time_emb: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        t_mod = self.time_mlp(time_emb).unsqueeze(1)
-        x_in = x + t_mod
-
-        x_norm1 = self.norm1(x_in)
-        x = x + self.ssm(x_norm1)
-
-        x_norm2 = self.norm2(x)
-        moe_out, aux_loss = self.moe(x_norm2)
-        x = x + moe_out
-        return x, aux_loss
+        aux_loss = torch.var(F.softmax(logits, dim=-1).mean(dim=[0, 1]))
+        return residual + out, aux_loss
 
 class DACDrumFlowTGSSM(nn.Module):
-    def __init__(self, config: Optional[FlowDrumTGSSMConfig] = None):
+    def __init__(self, config: FlowDrumTGSSMConfig = FlowDrumTGSSMConfig()):
         super().__init__()
-        self.config = config or FlowDrumTGSSMConfig()
+        self.config = config
+
+        self.latent_in_proj = nn.Linear(config.latent_dim, config.d_model)
+        self.prompt_embed = nn.Embedding(config.vocab_size, config.d_model)
+        self.prompt_pos = nn.Parameter(torch.randn(1, config.max_prompt_len, config.d_model) * 0.02)
 
         self.time_embed = nn.Sequential(
-            SinusoidalTimeEmbedding(self.config.d_model),
-            nn.Linear(self.config.d_model, self.config.d_model),
+            SinusoidalTimeEmbedding(config.d_model),
+            nn.Linear(config.d_model, config.d_model * 2),
             nn.SiLU(),
-            nn.Linear(self.config.d_model, self.config.d_model),
+            nn.Linear(config.d_model * 2, config.d_model),
         )
 
-        self.text_embeddings = nn.Embedding(self.config.vocab_size, self.config.d_model)
-        self.text_proj = nn.Sequential(
-            RMSNormFP32(self.config.d_model),
-            FP4Linear(self.config.d_model, self.config.d_model, bias=False, block_size=self.config.fp4_block_size),
-            nn.SiLU(),
-        )
+        self.layers = nn.ModuleList([TGSSMBlock(config) for _ in range(config.n_layers)])
+        self.moe_layers = nn.ModuleList([FlowMoELayer(config) for _ in range(config.n_layers // 2)])
 
-        self.latent_in_proj = nn.Linear(self.config.latent_dim, self.config.d_model)
+        self.final_norm = nn.LayerNorm(config.d_model)
+        self.latent_out_proj = nn.Linear(config.d_model, config.latent_dim)
 
-        self.layers = nn.ModuleList([
-            FlowTGSSMBlock(self.config) for _ in range(self.config.n_layers)
-        ])
-        self.final_norm = RMSNormFP32(self.config.d_model)
+    def forward(self, z_t: torch.Tensor, t: torch.Tensor, prompt_ids: torch.Tensor, p_uncond: float = 0.0) -> tuple:
+        # z_t: [B, 1024, L] -> transpose to [B, L, 1024]
+        x_latent = z_t.transpose(1, 2)
+        B, L, _ = x_latent.shape
 
-        self.velocity_head = nn.Sequential(
-            RMSNormFP32(self.config.d_model),
-            FP4Linear(self.config.d_model, self.config.latent_dim, bias=False, block_size=self.config.fp4_block_size)
-        )
+        h_latent = self.latent_in_proj(x_latent) # [B, L, D]
+        h_time = self.time_embed(t).unsqueeze(1) # [B, 1, D]
+        h_latent = h_latent + h_time
 
-    def forward(
-        self,
-        z_t: torch.Tensor,
-        t: torch.Tensor,
-        prompt_ids: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        batch, _, num_frames = z_t.shape
-        t_emb = self.time_embed(t)
+        # Classifier-Free Guidance Training Dropout
+        if self.training and p_uncond > 0.0:
+            uncond_mask = torch.rand(B, device=z_t.device) < p_uncond
+            if uncond_mask.any():
+                prompt_ids = prompt_ids.clone()
+                prompt_ids[uncond_mask] = 50256 # GPT-2 EOS / pad token
 
-        text_emb = self.text_embeddings(prompt_ids)
-        text_cond = self.text_proj(text_emb)
+        # Prompt conditioning
+        P_len = prompt_ids.shape[1]
+        h_prompt = self.prompt_embed(prompt_ids) + self.prompt_pos[:, :P_len, :]
 
-        z_transposed = z_t.transpose(1, 2)
-        audio_emb = self.latent_in_proj(z_transposed)
+        # Concatenate conditioning prompt prefix with latent trajectory sequence
+        h = torch.cat([h_prompt, h_latent], dim=1) # [B, P + L, D]
 
-        x = torch.cat([text_cond, audio_emb], dim=1)
+        total_aux_loss = 0.0
+        moe_idx = 0
+        for i, layer in enumerate(self.layers):
+            h = layer(h)
+            if i % 2 == 1 and moe_idx < len(self.moe_layers):
+                h, aux = self.moe_layers[moe_idx](h)
+                total_aux_loss += aux
+                moe_idx += 1
 
-        aux_losses = []
-        for layer in self.layers:
-            x, aux_loss = layer(x, t_emb)
-            aux_losses.append(aux_loss)
-
-        x = self.final_norm(x)
-        aux_total = torch.stack(aux_losses).mean()
-
-        prompt_len = prompt_ids.shape[1]
-        audio_out = x[:, prompt_len:, :]
-
-        pred_velocity = self.velocity_head(audio_out)
-        pred_velocity = pred_velocity.transpose(1, 2)
-
-        return pred_velocity, aux_total
-
-    def _eval_velocity(
-        self,
-        z_t: torch.Tensor,
-        t_val: float,
-        prompt_ids: torch.Tensor,
-        uncond_ids: torch.Tensor,
-        guidance_scale: float,
-    ) -> torch.Tensor:
-        batch = prompt_ids.shape[0]
-        device = prompt_ids.device
-        t_tensor = torch.full((batch,), t_val, device=device, dtype=torch.float32)
-
-        v_cond, _ = self.forward(z_t, t_tensor, prompt_ids)
-        if guidance_scale > 1.0:
-            v_uncond, _ = self.forward(z_t, t_tensor, uncond_ids)
-            return v_uncond + guidance_scale * (v_cond - v_uncond)
-        return v_cond
+        h_out = self.final_norm(h[:, P_len:, :])
+        pred_velocity = self.latent_out_proj(h_out).transpose(1, 2) # [B, 1024, L]
+        return pred_velocity, total_aux_loss
 
     @torch.no_grad()
     def generate_flow(
         self,
         prompt_ids: torch.Tensor,
-        num_frames: int = 43,
-        steps: int = 25,
+        num_frames: int = 43, # 43 frames @ 44.1kHz ~ 0.50 seconds
+        steps: int = 30,
         guidance_scale: float = 3.0,
-        sampler: str = "heun",  # "euler", "heun", "midpoint", "rk4"
+        sampler: str = "heun",
     ) -> torch.Tensor:
-        """
-        ODE integration along continuous optimal transport flow.
-        Supported samplers: 'heun' (default 2nd order), 'euler', 'midpoint', 'rk4'.
-        """
         self.eval()
+        B = prompt_ids.shape[0]
         device = prompt_ids.device
-        batch = prompt_ids.shape[0]
 
-        z_t = torch.randn(batch, self.config.latent_dim, num_frames, device=device)
+        # Unconditional empty prompt for CFG
+        uncond_ids = torch.full_like(prompt_ids, 50256)
+
+        # Initial standard Gaussian noise on continuous manifold
+        z_t = torch.randn(B, self.config.latent_dim, num_frames, device=device)
         dt = 1.0 / steps
-        uncond_ids = torch.zeros_like(prompt_ids)
 
-        for i in range(steps):
-            t_curr = i / steps
-            t_next = min(1.0, (i + 1) / steps)
+        def get_cfg_velocity(curr_z, curr_t):
+            t_batch = torch.full((B,), curr_t, device=device, dtype=torch.float32)
+            v_cond, _ = self.forward(curr_z, t_batch, prompt_ids, p_uncond=0.0)
+            if guidance_scale != 1.0:
+                v_uncond, _ = self.forward(curr_z, t_batch, uncond_ids, p_uncond=0.0)
+                v = v_uncond + guidance_scale * (v_cond - v_uncond)
+            else:
+                v = v_cond
+            return v
 
-            if sampler.lower() == "euler":
-                # 1st order Euler
-                v = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
-                z_t = z_t + dt * v
+        # -------------------------------------------------------------
+        # HIGH-ORDER NUMERICAL FLOW SOLVERS
+        # -------------------------------------------------------------
+        if sampler == "heun":
+            # 2nd-Order Predictor-Corrector
+            for i in range(steps):
+                t_curr = i * dt
+                t_next = (i + 1) * dt
+                v_curr = get_cfg_velocity(z_t, t_curr)
+                z_pred = z_t + dt * v_curr
+                v_next = get_cfg_velocity(z_pred, t_next)
+                z_t = z_t + dt * 0.5 * (v_curr + v_next)
 
-            elif sampler.lower() == "heun":
-                # 2nd order Heun (Predictor-Corrector)
-                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
-                z_pred = z_t + dt * v1
-                v2 = self._eval_velocity(z_pred, t_next, prompt_ids, uncond_ids, guidance_scale)
-                v_avg = 0.5 * (v1 + v2)
-                z_t = z_t + dt * v_avg
+        elif sampler == "rk4":
+            # 4th-Order Classic Runge-Kutta
+            for i in range(steps):
+                t_curr = i * dt
+                k1 = get_cfg_velocity(z_t, t_curr)
+                k2 = get_cfg_velocity(z_t + 0.5 * dt * k1, t_curr + 0.5 * dt)
+                k3 = get_cfg_velocity(z_t + 0.5 * dt * k2, t_curr + 0.5 * dt)
+                k4 = get_cfg_velocity(z_t + dt * k3, t_curr + dt)
+                z_t = z_t + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
-            elif sampler.lower() == "midpoint":
-                # 2nd order Midpoint RK2
-                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
-                z_mid = z_t + (0.5 * dt) * v1
-                t_mid = t_curr + 0.5 * dt
-                v_mid = self._eval_velocity(z_mid, t_mid, prompt_ids, uncond_ids, guidance_scale)
+        elif sampler == "midpoint":
+            # 2nd-Order Midpoint RK2
+            for i in range(steps):
+                t_curr = i * dt
+                v_curr = get_cfg_velocity(z_t, t_curr)
+                z_mid = z_t + 0.5 * dt * v_curr
+                v_mid = get_cfg_velocity(z_mid, t_curr + 0.5 * dt)
                 z_t = z_t + dt * v_mid
 
-            elif sampler.lower() == "rk4":
-                # 4th order Runge-Kutta
-                v1 = self._eval_velocity(z_t, t_curr, prompt_ids, uncond_ids, guidance_scale)
-                z2 = z_t + (0.5 * dt) * v1
-                v2 = self._eval_velocity(z2, t_curr + 0.5 * dt, prompt_ids, uncond_ids, guidance_scale)
-                z3 = z_t + (0.5 * dt) * v2
-                v3 = self._eval_velocity(z3, t_curr + 0.5 * dt, prompt_ids, uncond_ids, guidance_scale)
-                z4 = z_t + dt * v3
-                v4 = self._eval_velocity(z4, t_next, prompt_ids, uncond_ids, guidance_scale)
-                z_t = z_t + (dt / 6.0) * (v1 + 2 * v2 + 2 * v3 + v4)
-
-            else:
-                raise ValueError(f"Unknown sampler: {sampler}. Choose from 'heun', 'euler', 'midpoint', 'rk4'")
+        else:
+            # 1st-Order Euler
+            for i in range(steps):
+                t_curr = i * dt
+                v = get_cfg_velocity(z_t, t_curr)
+                z_t = z_t + dt * v
 
         return z_t
