@@ -27,25 +27,25 @@ Supported and trained on local **NVIDIA GeForce RTX 3060** & **Google AI Ultra /
 
 ---
 
-## 🎧 Generated Studio Audio Samples (Organized by Sampler)
+## 🎧 Master Audio Previews (44.1kHz Studio Master Quality)
 
-Located in `generated_audio/<sampler>/`:
+Located in `generated_audio/`:
 
 ### 🔬 1. Heun 2nd-Order Predictor-Corrector (`generated_audio/heun/`)
 
-| Audio Sample | Target Drum / Conditioning Prompt | Sample Rate | Duration | RMS Energy | Sampler |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **`test_heun_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | `0.2111` | **Heun (2nd-Order)** |
-| **`test_heun_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | `0.1527` | **Heun (2nd-Order)** |
+| Audio Sample | Target Drum / Conditioning Prompt | Sample Rate | Duration | Sampler |
+| :--- | :--- | :--- | :--- | :--- |
+| **`master_heun_808.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **Heun (2nd-Order)** |
+| **`master_heun_snare.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | **Heun (2nd-Order)** |
 
-### ⚡ 2. Euler 1st-Order Flow (`generated_audio/euler/`)
+### ⚡ 2. Euler 1st-Order Multi-Genre Suite (`generated_audio/euler/`)
 
 | Audio Sample | Target Drum / Conditioning Prompt | Sample Rate | Duration | RMS Energy | Epoch |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`dac_flow_epoch_35_sample_1.wav`** | *"808, sub kick, sub bass, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.2998`** | **Master (Epoch 35)** |
-| **`dac_flow_epoch_35_sample_2.wav`** | *"snare drum, acoustic snare, crack, bright top end, crisp sheen, hard transient click"* | `44,100 Hz` | `0.50s` | `0.1194` | **Master (Epoch 35)** |
-| **`multi_genre_epoch_10_sample_1.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | `0.2218` | **Multi-Genre (Epoch 10)** |
-| **`multi_genre_epoch_10_sample_2.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | `0.2249` | **Multi-Genre (Epoch 10)** |
+| **`multi_genre_epoch_35_sample_1.wav`** | *"trap, 808, sub kick, deep sub, deep 50Hz sub, heavy low end, hard transient click"* | `44,100 Hz` | `0.50s` | **`0.4403`** | **Master (Epoch 35)** |
+| **`multi_genre_epoch_35_sample_2.wav`** | *"acoustic rock, snare drum, live studio crack, bright top end, crisp sheen"* | `44,100 Hz` | `0.50s` | `0.1942` | **Master (Epoch 35)** |
+| **`multi_genre_epoch_35_sample_3.wav`** | *"synthwave, 80s retro, gated snare, analog saturation, diffused room reverb"* | `44,100 Hz` | `0.50s` | `0.1723` | **Master (Epoch 35)** |
+| **`multi_genre_epoch_35_sample_4.wav`** | *"latin percussion, afrobeat, cowbell, woodblock, bright top end, metallic"* | `44,100 Hz` | `0.50s` | `0.1899` | **Master (Epoch 35)** |
 
 ---
 
